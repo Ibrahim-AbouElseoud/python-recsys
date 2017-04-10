@@ -36,6 +36,10 @@ class Algorithm(object):
         self._matrix_similarity = None #self-similarity matrix (only for the input Matrix rows)
         self._matrix_and_data_aligned = False #both Matrix and Data contain the same info?
 
+       #new for update
+        self._updateData=Data()
+        self._singleUpdateMatrix=SparseMatrix()
+
     def __len__(self):
         return len(self.get_data())
 
@@ -97,6 +101,8 @@ class Algorithm(object):
             self._matrix_similarity = None
 
         self._data.load(filename, force, sep, format, pickle)
+
+
     
     def save_data(self, filename, pickle=False):
         """

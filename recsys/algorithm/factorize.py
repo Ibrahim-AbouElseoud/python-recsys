@@ -9,6 +9,7 @@
 import os
 import sys
 import zipfile
+
 try:
     import divisi2
 except:
@@ -29,6 +30,10 @@ from divisi2.ordered_set import OrderedSet
 from recsys.algorithm.baseclass import Algorithm
 from recsys.algorithm.matrix import SimilarityMatrix
 from recsys.algorithm import VERBOSE
+
+from numpy.linalg import inv #for update
+import numpy as np
+from recsys.datamodel.data import Data
 
 TMPDIR = '/tmp'
 
@@ -65,6 +70,9 @@ class SVD(Algorithm):
         # Row and Col ids. Only when importing from SVDLIBC
         self._file_row_ids = None
         self._file_col_ids = None
+
+        #Update feature
+
 
     def __repr__(self):
         try:
@@ -241,7 +249,7 @@ class SVD(Algorithm):
         :param savefile: path to save the SVD factorization (U, Sigma and V matrices)
         :type savefile: string
         """
-        super(SVD, self).compute(min_values)
+        super(SVD, self).compute(min_values) #creates matrix and does squish to not have empty values
 
         if VERBOSE:
             sys.stdout.write('Computing svd k=%s, min_values=%s, pre_normalize=%s, mean_center=%s, post_normalize=%s\n' 
@@ -351,6 +359,122 @@ class SVD(Algorithm):
                 zeros = self._matrix.get().col_named(i).zero_entries()
             item = self._get_col_reconstructed(i, zeros)
         return item.top_items(n)
+
+    def load_updateDataTuple(self, filename, force=True, sep='\t', format={'value':0, 'row':1, 'col':2}, pickle=False,is_row=True):
+        """
+        Loads a dataset file that contains a tuple
+
+        See params definition in *datamodel.Data.load()*
+        """
+        # nDimension
+        if force:
+            self._updateData = Data()
+
+        self._updateData.load(filename, force, sep, format, pickle)
+        print "reading the new tuple"
+        if(is_row):
+            nDimensionLabels=self._V.all_labels()
+            # print nDimensionLabels
+            self._singleUpdateMatrix.create(self._updateData.get(),col_labels=nDimensionLabels[0])
+
+        else:
+            nDimensionLabels = self._U.all_labels()
+            # print nDimensionLabels
+            self._singleUpdateMatrix.create(self._updateData.get(), row_labels=nDimensionLabels[0])
+
+        # #update the data matrix
+        print "updating the sparse matrix"
+        # print "matrix before update:",self._matrix.get().shape
+        self._matrix.update(self._singleUpdateMatrix) # updating the data matrix for the zeroes , also for saving the data matrix if needed
+        # print "matrix after update:",self._matrix.get().shape
+
+    def update_sparse_matrix_data(self,squishFactor=10):
+        #update the data matrix
+        # print "matrix before update:",self._matrix.get().shape
+        print "commiting the sparse data matrix by removing empty rows and columns divisi created"
+        self._matrix.squish(squishFactor) # updating the data matrix for the zeroes ,#NOTE: Intensive so do at end
+        # print "matrix after update:",self._matrix.get().shape
+
+    def update(self,is_row=True): #update(tuple:denseVector tuple,isRow=True,,
+      print "type of S",type(self._S)
+      print "type of U",type(self._U)
+      print "type of V",type(self._V)
+      print "type of data",type(self._data)
+      print "type of matrix",type(self._matrix)
+      print "type of matrix reconstructed",type(self._matrix_reconstructed)
+      print "type of matrix similarity",type(self._matrix_similarity)
+
+      print "dimensions of S",self._S.shape
+      print "dimensions of U",self._U.shape
+      print "dimensions of V",self._V.shape
+
+
+      invS=np.zeros((self._S.shape[0], self._S.shape[0]))
+      for i in range(self._S.shape[0]):
+          invS[i, i] = self._S[i]**-1  # creating diagonal matrix and inverting using special property of diagonal matrix
+
+      #if new is row -> V*S^-1
+      if is_row:
+        prodM=self._V.dot(invS)
+        print "dimension of VxS^-1=", prodM.shape
+      else:       #if new is col -> U*S^-1
+        prodM = self._U.dot(invS)
+        print "dimension of UxS^-1=", prodM.shape
+
+      updateTupleMatrix=self._singleUpdateMatrix.get()
+      if not is_row:
+          updateTupleMatrix=updateTupleMatrix.transpose() #transpose
+      print "dimensions of user",updateTupleMatrix.shape
+      res=updateTupleMatrix.dot(prodM)
+      print "type of res=", type(res)
+      print "dimension of resultant is", res.shape
+
+      if is_row:
+      #use new value can now be concatinated with U
+        print "U before adding", self._U.shape
+        self._U=self._U.concatenate(res)
+        print "U after adding", self._U.shape
+
+      else:
+        print "V before adding", self._V.shape
+        self._V = self._V.concatenate(res)
+        print "V after adding", self._V.shape
+
+      print "before updating, M=",self._matrix_reconstructed.shape
+      # Sim. matrix = U \Sigma^2 U^T
+      self._reconstruct_similarity(post_normalize=False, force=True)
+      # M' = U S V^t
+      self._reconstruct_matrix(shifts=self._shifts, force=True)
+
+      print "done updating, M=",self._matrix_reconstructed.shape
+
+
+
+
+      # myFile=open("prodMVSq.dat",'w')
+      # myFile.truncate()
+      #
+      # for i in range(20):
+      #   myFile.write(str(res[0, i])+" ")
+      #
+      #   myFile.write("\n")
+
+      # # invS = inv(diag_S)
+      # # print "dimensions of S^-1", invS.shape
+      #
+      #
+      # print "writing s to file"
+      # myFile=open("invS.dat",'w')
+      # myFile.truncate()
+      # # for item in self.invS.tolist():
+      # #     myFile.write(str(item))
+      # #     myFile.write("\n")
+      # myFile.write("dimensions= "+str(invS.shape))
+      # myFile.write("\n")
+      # for i in range(invS.shape[0]):
+      #   myFile.write(str(invS[i,i]))
+      #   myFile.write("\n")
+
 
     def centroid(self, ids, is_row=True):
         points = []

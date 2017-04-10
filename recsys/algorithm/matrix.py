@@ -73,12 +73,30 @@ class Matrix(object):
 class SparseMatrix(Matrix):
     def __init__(self):
         super(SparseMatrix, self).__init__()
+        self._values=None
+        self._rows=None
+        self._cols=None
 
-    def create(self, data):
-        values = map(itemgetter(0), data)
-        rows = map(itemgetter(1), data)
-        cols = map(itemgetter(2), data)
-        self._matrix = divisiSparseMatrix.from_named_lists(values, rows, cols)
+#`nrows` and `ncols` specify the shape the resulting
+#matrix should have, in case it is larger than the largest index.
+    def create(self, data,row_labels=None, col_labels=None):
+        self._values = map(itemgetter(0), data)
+        self._rows = map(itemgetter(1), data)
+        self._cols = map(itemgetter(2), data)
+        self._matrix = divisiSparseMatrix.from_named_lists(self._values, self._rows, self._cols,row_labels, col_labels)
+
+    def update(self, matrix):
+
+        self._values.extend(matrix._values)
+        self._rows.extend(matrix._rows)
+        self._cols.extend(matrix._cols)
+
+        self._matrix = divisiSparseMatrix.from_named_lists(self._values, self._rows, self._cols)
+
+    def squish(self,squishFactor):
+        self._matrix=self._matrix.squish(squishFactor)
+
+
 
     def empty(self):
         return not self._matrix or not self._matrix.values()
