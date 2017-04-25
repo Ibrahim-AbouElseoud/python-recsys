@@ -76,27 +76,68 @@ class SparseMatrix(Matrix):
         self._values=None
         self._rows=None
         self._cols=None
+        self._additional_elements=[] #if no additional then len will equal 0
 
-#`nrows` and `ncols` specify the shape the resulting
+
+    def get_rows(self): #can use to get rated items and remove from recommendation
+        return self._rows
+
+    def get_cols(self): #can use to get rated items and remove from recommendation
+        return self._cols
+
+    def get_additional_elements(self):  # can use to get rated items and remove from recommendation
+        return self._additional_elements
+
+    # def create_blank(self,element_id,row_labels=None, col_labels=None):
+    #     if col_labels:
+    #
+    #     self._matrix = divisiSparseMatrix.from_named_lists(self._values, self._rows, self._cols,row_labels, col_labels)
+
+
+#row_labels specifies the row labels the complete matrix should have incase the inputted file doesn't include all indicies and it was saved in previous matrix (for update)
+#same explination for col_labels but for columns
 #matrix should have, in case it is larger than the largest index.
-    def create(self, data,row_labels=None, col_labels=None):
+    def create(self, data,row_labels=None, col_labels=None, foldin=False,truncate=False): #is_row is what I'm originally folding in
         self._values = map(itemgetter(0), data)
         self._rows = map(itemgetter(1), data)
         self._cols = map(itemgetter(2), data)
+
+        if foldin: #new to make sure not folding in user and item at same time
+            #idea: create matrix normally but keep track of the columns (items) or rows to be folded in before doing update
+            if col_labels: #if col_labels defined then I'm folding in a row
+                self._additional_elements = [x for x in self._cols if x not in col_labels]
+            else: #else I am folding in a column
+                self._additional_elements = [x for x in self._rows if x not in row_labels]
+            if truncate:
+                for item in self._additional_elements:
+                    if col_labels:
+                        index_remove = self._cols.index(item)
+                    else:
+                        index_remove = self._rows.index(item)
+                    del self._values[index_remove]
+                    del self._rows[index_remove]
+                    del self._cols[index_remove]
+
+
         self._matrix = divisiSparseMatrix.from_named_lists(self._values, self._rows, self._cols,row_labels, col_labels)
 
-    def update(self, matrix):
 
+
+
+    def update(self, matrix,is_batch=False): #isbatch is for creating the final sparse matrix ,since you will want to collect all then construct final matrix at end
+#To update the stored data matrix with the new values and create a new divisi spare matrix with it to retain the zeroes
         self._values.extend(matrix._values)
         self._rows.extend(matrix._rows)
         self._cols.extend(matrix._cols)
 
-        self._matrix = divisiSparseMatrix.from_named_lists(self._values, self._rows, self._cols)
+        if not is_batch:
+            self._matrix = divisiSparseMatrix.from_named_lists(self._values, self._rows, self._cols)
 
-    def squish(self,squishFactor):
+    def squish(self,squishFactor): #remove additional empty fields created by divisiSparseMatrix
         self._matrix=self._matrix.squish(squishFactor)
 
-
+    def index_sparseMatrix(self):
+        self._matrix = divisiSparseMatrix.from_named_lists(self._values, self._rows, self._cols)
 
     def empty(self):
         return not self._matrix or not self._matrix.values()

@@ -121,7 +121,7 @@ class Data:
             self._load_pickle(path)
         else:
             i = 0 
-            for line in codecs.open(path, 'r', 'utf8'):
+            for line in codecs.open(path, 'r', 'ISO-8859-1'): #was utf8 changed it to 'ISO-8859-1'
                 data = line.strip('\r\n').split(sep)
                 value = None
                 if not data:

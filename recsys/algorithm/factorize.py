@@ -73,7 +73,6 @@ class SVD(Algorithm):
 
         #Update feature
 
-
     def __repr__(self):
         try:
             s = '\n'.join(('M\':' + str(self._reconstruct_matrix()), \
@@ -360,9 +359,9 @@ class SVD(Algorithm):
             item = self._get_col_reconstructed(i, zeros)
         return item.top_items(n)
 
-    def load_updateDataTuple(self, filename, force=True, sep='\t', format={'value':0, 'row':1, 'col':2}, pickle=False,is_row=True):
+    def load_updateDataTuple_foldin(self, filename, force=True, sep='\t', format={'value':0, 'row':1, 'col':2}, pickle=False,is_row=True,truncate=False):
         """
-        Loads a dataset file that contains a tuple
+        Loads a dataset file that contains a SINGLE tuple (a dataset for a single user OR item , has to be either same row or same column depending on is_row aka tuple)
 
         See params definition in *datamodel.Data.load()*
         """
@@ -371,82 +370,239 @@ class SVD(Algorithm):
             self._updateData = Data()
 
         self._updateData.load(filename, force, sep, format, pickle)
-        print "reading the new tuple"
+
+        if VERBOSE:
+            print "reading the new tuple"
         if(is_row):
-            nDimensionLabels=self._V.all_labels()
-            # print nDimensionLabels
-            self._singleUpdateMatrix.create(self._updateData.get(),col_labels=nDimensionLabels[0])
+            nDimensionLabels=self._V.all_labels()[0] #get labels from V matrix to complete the sparse matrix
+            print type(nDimensionLabels)
+            print type(nDimensionLabels[0])
+            print len(nDimensionLabels)
+            self._singleUpdateMatrix.create(self._updateData.get(), col_labels=nDimensionLabels, foldin=True,truncate=truncate)
 
         else:
-            nDimensionLabels = self._U.all_labels()
-            # print nDimensionLabels
-            self._singleUpdateMatrix.create(self._updateData.get(), row_labels=nDimensionLabels[0])
+            nDimensionLabels = self._U.all_labels() #get labels from U matrix to complete the sparse matrix
+            print nDimensionLabels
+            self._singleUpdateMatrix.create(self._updateData.get(), row_labels=nDimensionLabels, foldin=True,truncate=truncate)
+
+        if not truncate:
+            additionalElements=self._singleUpdateMatrix.get_additional_elements()
+            #If it's trying to foldin a new user who has rated a new item which was not used before, then foldin the item first then foldin that user
+            print "dimension",len(nDimensionLabels)
+            print "additional elements:",additionalElements
+            print "length",len(additionalElements)
+            if len(additionalElements) !=0:
+                for item in additionalElements:
+                    if (is_row): #if I am folding in a row then , the additionals added that shouldn't be are the columns to be folded in to the rows
+                        self._singleAdditionalFoldin.create([(0,nDimensionLabels[0],item)], row_labels=self._U.all_labels()[0])
+                    else:
+                        self._singleAdditionalFoldin.create([(0,item,nDimensionLabels[0])], col_labels=self._V.all_labels()[0])
+                    self._update(update_matrix=self._singleAdditionalFoldin,is_row=not is_row)
 
         # #update the data matrix
-        print "updating the sparse matrix"
+        if VERBOSE:
+            print "updating the sparse matrix"
         # print "matrix before update:",self._matrix.get().shape
-        self._matrix.update(self._singleUpdateMatrix) # updating the data matrix for the zeroes , also for saving the data matrix if needed
+        if self._matrix.get(): #if matrix not there due to load ignore it
+            self._matrix.update(self._singleUpdateMatrix) # updating the data matrix for the zeroes , also for saving the data matrix if needed
         # print "matrix after update:",self._matrix.get().shape
+        self._update(is_row=is_row)
 
-    def update_sparse_matrix_data(self,squishFactor=10):
+    def _construct_batch_dictionary(self,data,is_row=True):
+        '''
+        
+        :param data: Data()
+        :param is_row: Boolean
+        :return: constructs a dictionary with the row or col as the keys (depending on which is being added) with values as the tuples
+        in self._batchDict
+        '''
+        # self._values = map(itemgetter(0), data)
+        # self._rows = map(itemgetter(1), data)
+        # self._cols = map(itemgetter(2), data)
+        key_idx=1 #key index default is the row
+        if not is_row:
+            key_idx=2
+
+        #collecting the significant col or row tuples at one place to fold them in at once
+
+        for item in data: #data is a list of tuples so item is 1 tuple
+            try:
+                self._batchDict[item[key_idx]].append(item)
+            except KeyError:
+                self._batchDict[item[key_idx]] = []
+                self._batchDict[item[key_idx]].append(item)
+
+        #batch loaded , now need to fold them in one by one
+        print "Batch loaded successfully"
+
+
+    def load_updateDataBatch_foldin(self, filename, force=True, sep='\t', format={'value': 0, 'row': 1, 'col': 2},
+                                 pickle=False, is_row=True,truncate=False):
+            """
+            Dont forget future work in presentation , remove old and insert new
+            Loads a dataset file that contains Multiple tuples
+
+            truncate:boolean-> sometimes new users rate new items not in the original SVD matrix so would you like new items to be truncated or folded in ? default is foldin
+            is_row: boolean -> are you trying to foldin a row or a column ? yes->foldin row , no->foldin column
+            See params definition in *datamodel.Data.load()*
+            
+            """
+            # call update here until it finishes
+            # nDimension
+            if force:
+                self._updateData = Data()
+
+            self._updateData.load(filename, force, sep, format, pickle) #load array of tuples
+            print "Reading the new batch"
+
+            self._construct_batch_dictionary(self._updateData.get(),is_row)
+
+            print "Folding in batch entries"
+            nDimensionLabels=None
+            if (is_row):
+                nDimensionLabels = self._V.all_labels()[0]  # get labels from V matrix to complete the sparse matrix
+                # print nDimensionLabels
+            else:
+                nDimensionLabels = self._U.all_labels()[0]  # get labels from U matrix to complete the sparse matrix
+                # print nDimensionLabels
+            length_of_dict=len(self._batchDict)
+            i=0
+            isbatch=True
+            for key_idx in self._batchDict: #data in batchDict in form {key:[(tuple)]}
+                print "user:",key_idx
+                i += 1
+                if (is_row):
+                    self._singleUpdateMatrix.create(self._batchDict[key_idx], col_labels=nDimensionLabels,foldin=True,truncate=truncate)
+
+                else:
+                    self._singleUpdateMatrix.create(self._batchDict[key_idx], row_labels=nDimensionLabels,foldin=True,truncate=truncate)
+
+                # if(i==length_of_dict):
+                #     isbatch=False
+
+
+                # If it's trying to foldin a new user who has rated a new item which was not used before, then foldin the item first then foldin that user
+                if not truncate:
+                    additionalElements = self._singleUpdateMatrix.get_additional_elements()
+                    print "dimension", len(nDimensionLabels)
+                    print "additional elements:", additionalElements
+                    print "length", len(additionalElements)
+                    if len(additionalElements) != 0:
+                        for item in additionalElements:
+                            if (is_row):  # if I am folding in a row then , the additionals added that shouldn't be are the columns to be folded in to the rows
+                                self._singleAdditionalFoldin.create([(0, nDimensionLabels[0], item)],
+                                                                    row_labels=self._U.all_labels()[0])
+                            else:
+                                self._singleAdditionalFoldin.create([(0, item, nDimensionLabels[0])],
+                                                                    col_labels=self._V.all_labels()[0])
+                            self._update(update_matrix=self._singleAdditionalFoldin, is_row=not is_row)
+
+
+                # #update the data matrix
+                print "updating the sparse matrix"
+                # print "matrix before update:",self._matrix.get().shape
+                if self._matrix.get(): #if matrix not there due to load ignore it
+                    self._matrix.update(
+                        self._singleUpdateMatrix,is_batch=isbatch)  # updating the data matrix for the zeroes , also for saving the data matrix if needed
+                # print "matrix after update:",self._matrix.get().shape
+                self._update(is_row=is_row,is_batch=isbatch) #Do foldin on the singleUpdateMatrix tuple
+
+            self.update_sparse_matrix_data(is_batch=True)
+
+
+    def update_sparse_matrix_data(self,squishFactor=10,is_batch=False):
         #update the data matrix
         # print "matrix before update:",self._matrix.get().shape
-        print "commiting the sparse data matrix by removing empty rows and columns divisi created"
-        self._matrix.squish(squishFactor) # updating the data matrix for the zeroes ,#NOTE: Intensive so do at end
-        # print "matrix after update:",self._matrix.get().shape
+        if is_batch:
+            if self._matrix.get():
+                if VERBOSE:
+                    print "updating sparse index"
+                self._matrix.index_sparseMatrix()
+            if VERBOSE:
+                print "before updating, M=", self._matrix_reconstructed.shape
+            # Sim. matrix = U \Sigma^2 U^T
+            self._reconstruct_similarity(post_normalize=False, force=True)
+            # M' = U S V^t
+            self._reconstruct_matrix(shifts=self._shifts, force=True)
+            if VERBOSE:
+                print "done updating, M=", self._matrix_reconstructed.shape
 
-    def update(self,is_row=True): #update(tuple:denseVector tuple,isRow=True,,
-      print "type of S",type(self._S)
-      print "type of U",type(self._U)
-      print "type of V",type(self._V)
-      print "type of data",type(self._data)
-      print "type of matrix",type(self._matrix)
-      print "type of matrix reconstructed",type(self._matrix_reconstructed)
-      print "type of matrix similarity",type(self._matrix_similarity)
+        if self._matrix.get(): #if loaded model there is no matrix
+            if VERBOSE:
+                print "commiting the sparse data matrix by removing empty rows and columns divisi created"
+            self._matrix.squish(squishFactor) # updating the data matrix for the zeroes ,#NOTE: Intensive so do at end
+            # print "matrix after update:",self._matrix.get().shape
 
-      print "dimensions of S",self._S.shape
-      print "dimensions of U",self._U.shape
-      print "dimensions of V",self._V.shape
 
+    def _update(self,update_matrix=None,is_row=True,is_batch=False): #update(tuple:denseVector tuple,isRow=True,,
+      if VERBOSE:
+          print "type of S",type(self._S)
+          print "type of U",type(self._U)
+          print "type of V",type(self._V)
+          print "type of data",type(self._data)
+          print "type of matrix",type(self._matrix)
+          print "type of matrix reconstructed",type(self._matrix_reconstructed)
+          print "type of matrix similarity",type(self._matrix_similarity)
+
+          print "dimensions of S",self._S.shape
+          print "dimensions of U",self._U.shape
+          print "dimensions of V",self._V.shape
 
       invS=np.zeros((self._S.shape[0], self._S.shape[0]))
       for i in range(self._S.shape[0]):
+          # invS[i, i] = self._S[i]  # creating diagonal matrix
           invS[i, i] = self._S[i]**-1  # creating diagonal matrix and inverting using special property of diagonal matrix
+      # invS=inv(invS) inverting with numpy
 
       #if new is row -> V*S^-1
       if is_row:
         prodM=self._V.dot(invS)
-        print "dimension of VxS^-1=", prodM.shape
+        if VERBOSE:
+            print "dimension of VxS^-1=", prodM.shape
       else:       #if new is col -> U*S^-1
         prodM = self._U.dot(invS)
-        print "dimension of UxS^-1=", prodM.shape
+        if VERBOSE:
+            print "dimension of UxS^-1=", prodM.shape
 
-      updateTupleMatrix=self._singleUpdateMatrix.get()
+      if update_matrix:
+          updateTupleMatrix=update_matrix.get()
+      else:
+          updateTupleMatrix = self._singleUpdateMatrix.get()
+
       if not is_row:
           updateTupleMatrix=updateTupleMatrix.transpose() #transpose
-      print "dimensions of user",updateTupleMatrix.shape
+      if VERBOSE:
+          print "dimensions of user",updateTupleMatrix.shape
       res=updateTupleMatrix.dot(prodM)
-      print "type of res=", type(res)
-      print "dimension of resultant is", res.shape
+      if VERBOSE:
+          print "type of res=", type(res)
+          print "dimension of resultant is", res.shape
 
       if is_row:
       #use new value can now be concatinated with U
-        print "U before adding", self._U.shape
+        if VERBOSE:
+            print "U before adding", self._U.shape
         self._U=self._U.concatenate(res)
-        print "U after adding", self._U.shape
+        if VERBOSE:
+            print "U after adding", self._U.shape
 
       else:
-        print "V before adding", self._V.shape
+        if VERBOSE:
+            print "V before adding", self._V.shape
         self._V = self._V.concatenate(res)
-        print "V after adding", self._V.shape
+        if VERBOSE:
+            print "V after adding", self._V.shape
 
-      print "before updating, M=",self._matrix_reconstructed.shape
-      # Sim. matrix = U \Sigma^2 U^T
-      self._reconstruct_similarity(post_normalize=False, force=True)
-      # M' = U S V^t
-      self._reconstruct_matrix(shifts=self._shifts, force=True)
-
-      print "done updating, M=",self._matrix_reconstructed.shape
+     #TODO: contemplating removing this segment and just reconstruct in the updating spare matrix function
+      if not is_batch: #will reconstruct all at end with batch using another function
+        if VERBOSE:
+            print "before updating, M=",self._matrix_reconstructed.shape
+        # Sim. matrix = U \Sigma^2 U^T
+        self._reconstruct_similarity(post_normalize=False, force=True)
+        # M' = U S V^t
+        self._reconstruct_matrix(shifts=self._shifts, force=True)
+        if VERBOSE:
+            print "done updating, M=",self._matrix_reconstructed.shape
 
 
 
@@ -475,6 +631,13 @@ class SVD(Algorithm):
       #   myFile.write(str(invS[i,i]))
       #   myFile.write("\n")
 
+    def printMovies(self):
+        myFile=open("movieIDs.dat",'w')
+        myFile.truncate()
+
+        movies=self._matrix_reconstructed.get_col_labels()
+        for movie in movies :
+          myFile.write(str(movie)+",")
 
     def centroid(self, ids, is_row=True):
         points = []

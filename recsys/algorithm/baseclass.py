@@ -39,6 +39,11 @@ class Algorithm(object):
        #new for update
         self._updateData=Data()
         self._singleUpdateMatrix=SparseMatrix()
+        #new for batch
+        self._batchDict={}
+        #new for foldin additional
+        self._singleAdditionalFoldin=SparseMatrix()
+
 
     def __len__(self):
         return len(self.get_data())
