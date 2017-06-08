@@ -88,16 +88,11 @@ class SparseMatrix(Matrix):
     def get_additional_elements(self):  # can use to get rated items and remove from recommendation
         return self._additional_elements
 
-    # def create_blank(self,element_id,row_labels=None, col_labels=None):
-    #     if col_labels:
-    #
-    #     self._matrix = divisiSparseMatrix.from_named_lists(self._values, self._rows, self._cols,row_labels, col_labels)
-
-
 #row_labels specifies the row labels the complete matrix should have incase the inputted file doesn't include all indicies and it was saved in previous matrix (for update)
 #same explination for col_labels but for columns
 #matrix should have, in case it is larger than the largest index.
-    def create(self, data,row_labels=None, col_labels=None, foldin=False,truncate=False): #is_row is what I'm originally folding in
+    def create(self, data,row_labels=None, col_labels=None, foldin=False,truncate=False):
+         #is_row is what I'm originally folding in
         self._values = map(itemgetter(0), data)
         self._rows = map(itemgetter(1), data)
         self._cols = map(itemgetter(2), data)
@@ -154,4 +149,3 @@ class SimilarityMatrix(Matrix):
         if self._matrix:
             nrows, ncols = self._matrix.shape
         return not self._matrix or not (nrows and ncols)
-

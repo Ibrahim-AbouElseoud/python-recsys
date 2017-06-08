@@ -28,3 +28,8 @@ See: https://github.com/ocelma/python-recsys/commits/master
 
 2011-10-08
     * Added the whole project at github
+
+2017-06-08
+    * Added updating the SVD model incrementally by folding-in
+    * Added a capability to split the dataset for train,test,foldin to facilitate testing the Fold-in implementation
+    * Added update to github

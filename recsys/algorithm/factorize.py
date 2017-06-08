@@ -26,20 +26,24 @@ from numpy import fromfile #for large files (U and V)
 from divisi2 import DenseVector
 from divisi2 import DenseMatrix
 from divisi2.ordered_set import OrderedSet
-                                        
+
 from recsys.algorithm.baseclass import Algorithm
 from recsys.algorithm.matrix import SimilarityMatrix
 from recsys.algorithm import VERBOSE
 
 from numpy.linalg import inv #for update
 import numpy as np
+from divisi2.sparse import SparseMatrix as divisiSparseMatrix
+from divisi2.sparse import SparseVector as divisiSparseVector
+from divisi2.dense import DenseVector as divisiDenseVector
+
 from recsys.datamodel.data import Data
 
 TMPDIR = '/tmp'
 
 class SVD(Algorithm):
     """
-    Inherits from base class Algorithm. 
+    Inherits from base class Algorithm.
     It computes SVD (Singular Value Decomposition) on a matrix *M*
 
     It also provides recommendations and predictions using the reconstructed matrix *M'*
@@ -72,6 +76,8 @@ class SVD(Algorithm):
         self._file_col_ids = None
 
         #Update feature
+        self._foldinZeroes={}
+        self.inv_S=None #since it doesn't get updated so redundent to calculate each time
 
     def __repr__(self):
         try:
@@ -124,7 +130,7 @@ class SVD(Algorithm):
                 idx = [ int(idx.strip()) for idx in zip.read('.row_ids').split('\n') if idx]
             except:
                 idx = [ idx.strip() for idx in zip.read('.row_ids').split('\n') if idx]
-            #self._U = DenseMatrix(vectors) 
+            #self._U = DenseMatrix(vectors)
             self._U = DenseMatrix(vectors, OrderedSet(idx), None)
         try:
             self._V = loads(zip.read('.V'))
@@ -140,7 +146,7 @@ class SVD(Algorithm):
                 idx = [ int(idx.strip()) for idx in zip.read('.col_ids').split('\n') if idx]
             except:
                 idx = [ idx.strip() for idx in zip.read('.col_ids').split('\n') if idx]
-            #self._V = DenseMatrix(vectors) 
+            #self._V = DenseMatrix(vectors)
             self._V = DenseMatrix(vectors, OrderedSet(idx), None)
 
         self._S = loads(zip.read('.S'))
@@ -148,7 +154,7 @@ class SVD(Algorithm):
         # Shifts for Mean Centerer Matrix
         self._shifts = None
         if '.shifts.row' in zip.namelist():
-            self._shifts = [loads(zip.read('.shifts.row')), 
+            self._shifts = [loads(zip.read('.shifts.row')),
                             loads(zip.read('.shifts.col')),
                             loads(zip.read('.shifts.total'))
                            ]
@@ -198,7 +204,7 @@ class SVD(Algorithm):
         # Store Options in the ZIP file
         fp.write(filename=filename + '.config', arcname='README')
         os.remove(filename + '.config')
-        
+
         # Store matrices in the ZIP file
         for extension in ['.U', '.S', '.V']:
             fp.write(filename=filename + extension, arcname=extension)
@@ -231,6 +237,7 @@ class SVD(Algorithm):
                 self._matrix_reconstructed = divisi2.reconstruct(self._U, self._S, self._V)
         return self._matrix_reconstructed
 
+
     def compute(self, k=100, min_values=None, pre_normalize=None, mean_center=False, post_normalize=True, savefile=None):
         """
         Computes SVD on matrix *M*, :math:`M = U \Sigma V^T`
@@ -251,7 +258,7 @@ class SVD(Algorithm):
         super(SVD, self).compute(min_values) #creates matrix and does squish to not have empty values
 
         if VERBOSE:
-            sys.stdout.write('Computing svd k=%s, min_values=%s, pre_normalize=%s, mean_center=%s, post_normalize=%s\n' 
+            sys.stdout.write('Computing svd k=%s, min_values=%s, pre_normalize=%s, mean_center=%s, post_normalize=%s\n'
                             % (k, min_values, pre_normalize, mean_center, post_normalize))
             if not min_values:
                 sys.stdout.write('[WARNING] min_values is set to None, meaning that some funky recommendations might appear!\n')
@@ -264,17 +271,18 @@ class SVD(Algorithm):
         if mean_center:
             if VERBOSE:
                 sys.stdout.write("[WARNING] mean_center is True. svd.similar(...) might return nan's. If so, then do svd.compute(..., mean_center=False)\n")
-            matrix, row_shift, col_shift, total_shift = matrix.mean_center() 
+            matrix, row_shift, col_shift, total_shift = matrix.mean_center()
             self._shifts = (row_shift, col_shift, total_shift)
+
 
         # Pre-normalize input matrix?
         if pre_normalize:
             """
-            Divisi2 divides each entry by the geometric mean of its row norm and its column norm. 
+            Divisi2 divides each entry by the geometric mean of its row norm and its column norm.
             The rows and columns don't actually become unit vectors, but they all become closer to unit vectors.
             """
             if pre_normalize == 'tfidf':
-                matrix = matrix.normalize_tfidf() #TODO By default, treats the matrix as terms-by-documents; 
+                matrix = matrix.normalize_tfidf() #TODO By default, treats the matrix as terms-by-documents;
                                                   # pass cols_are_terms=True if the matrix is instead documents-by-terms.
             elif pre_normalize == 'rows':
                 matrix = matrix.normalize_rows()
@@ -296,7 +304,7 @@ class SVD(Algorithm):
             options = {'k': k, 'min_values': min_values, 'pre_normalize': pre_normalize, 'mean_center': mean_center, 'post_normalize': post_normalize}
             self.save_model(savefile, options)
 
-    def _get_row_reconstructed(self, i, zeros=None):
+    def _get_row_reconstructed(self, i, zeros=None): #if foldin that means it is known what the user rated and zeros contains the rated items
         if zeros:
             return self._matrix_reconstructed.row_named(i)[zeros]
         return self._matrix_reconstructed.row_named(i)
@@ -305,6 +313,40 @@ class SVD(Algorithm):
         if zeros:
             return self._matrix_reconstructed.col_named(j)[zeros]
         return self._matrix_reconstructed.col_named(j)
+
+    def _get_row_unrated(self,i,rated): # use for foldin since that means users new rated items are known so no need to squish or need normal matrix
+        sparse_matrix = self._matrix_reconstructed.row_named(i).to_sparse()
+        # values: np array with the predicted ratings or ratings
+        # named_rows: normal array with movie names
+        values, named_cols = sparse_matrix.named_lists() #values contains a np array with predicted ratings , while named_cols contains list of labels of columns
+        removal_indicies = [] #array of indicies for removal
+
+        for item in rated:
+            index_remove = named_cols.index(item)
+            del named_cols[index_remove] #since its a normal list can remove like this
+            removal_indicies.append(index_remove)
+
+        values = np.delete(values, removal_indicies) #since it's a numpy array so must remove like this
+
+        return divisiSparseVector.from_named_lists(values, named_cols).to_dense()
+
+
+
+    def _get_col_unrated(self, j,rated):  # use for foldin since that means users new rated items are known so no need to squish or need normal matrix
+        sparse_matrix=self._matrix_reconstructed.col_named(j).to_sparse()
+        # values: np array with the predicted ratings or ratings
+        # named_rows: normal array with movie names
+        values, named_rows= sparse_matrix.named_lists()
+        removal_indicies=[]
+
+        for item in rated:
+            index_remove = named_rows.index(item)
+            del named_rows[index_remove]
+            removal_indicies.append(index_remove)
+
+        values=np.delete(values, removal_indicies)
+
+        return divisiSparseVector.from_named_lists(values,named_rows).to_dense()
 
     def predict(self, i, j, MIN_VALUE=None, MAX_VALUE=None):
         """
@@ -347,25 +389,79 @@ class SVD(Algorithm):
             self.compute() #will use default values!
         item = None
         zeros = []
-        if only_unknowns and not self._matrix.get():
+        seeDict=False
+        if only_unknowns and not self._matrix.get() and len(self._foldinZeroes)==0:
             raise ValueError("Matrix is empty! If you loaded an SVD model you can't use only_unknowns=True, unless svd.create_matrix() is called")
+        if not self._matrix.get():
+            seeDict=True
         if is_row:
             if only_unknowns:
-                zeros = self._matrix.get().row_named(i).zero_entries()
-            item = self._get_row_reconstructed(i, zeros)
+                if seeDict:
+                    zeros=self._foldinZeroes[i] #zeros in this instance contains the rated items
+                    if len(zeros)==0:
+                        raise ValueError("Matrix is empty! If you loaded an SVD model you can't use only_unknowns=True, unless svd.create_matrix() is called or youve just folded them in")
+                    else:
+                        item = self._get_row_unrated(i, zeros) #removing the rated items from utility row for recommendations
+                else:
+                    zeros = self._matrix.get().row_named(i).zero_entries()
+                    item = self._get_row_reconstructed(i, zeros)
+            else:
+                item = self._get_row_reconstructed(i, zeros)
         else:
             if only_unknowns:
-                zeros = self._matrix.get().col_named(i).zero_entries()
-            item = self._get_col_reconstructed(i, zeros)
+                if seeDict:
+                    zeros=self._foldinZeroes[i] #zeros in this instance contains the rated items
+                    if len(zeros)==0:
+                        raise ValueError("Matrix is empty! If you loaded an SVD model you can't use only_unknowns=True, unless svd.create_matrix() is called or you just folded them in")
+                    else:
+                        item = self._get_col_unrated(i, zeros)  #removing the rated items from utility columns for recommendations
+                else:
+                    zeros = self._matrix.get().col_named(i).zero_entries()
+                    item = self._get_col_reconstructed(i, zeros)
+            else:
+                item = self._get_row_reconstructed(i, zeros)
+
         return item.top_items(n)
 
-    def load_updateDataTuple_foldin(self, filename, force=True, sep='\t', format={'value':0, 'row':1, 'col':2}, pickle=False,is_row=True,truncate=False):
-        """
-        Loads a dataset file that contains a SINGLE tuple (a dataset for a single user OR item , has to be either same row or same column depending on is_row aka tuple)
+    def _calc_mean_center(self, matrix, is_row=True):  #created this to use the loaded shifts and calculate the row or column shift
+        row_shift, col_shift, total_shift = self._shifts
 
-        See params definition in *datamodel.Data.load()*
+        total_mean = total_shift  # use the global shift one
+        if is_row:
+            row_means = matrix.row_op(np.mean) - total_mean  # calculate row shift
+            col_means = col_shift  # use already given col shifts
+        else:
+            row_means = row_shift  # use already given row shifts
+            col_means = matrix.col_op(np.mean) - total_mean  # calculate col shifts
+
+        row_lengths = matrix.row_op(len)
+        col_lengths = matrix.col_op(len)
+
+        shifted = matrix.copy()
+        for row, col in shifted.keys():
+            shifted[row, col] -= (
+                                     (row_means[row] * row_lengths[row]
+                                      + col_means[col] * col_lengths[col]
+                                      ) / (row_lengths[row] + col_lengths[col])
+                                 ) + total_mean
+
+        return (shifted, row_means, col_means, total_mean)
+        # return shifted
+
+    def load_updateDataTuple_foldin(self, filename,force=True, sep='\t', format={'value':0, 'row':1, 'col':2}, pickle=False,is_row=True,truncate=True,post_normalize=False):
         """
-        # nDimension
+        Folds-in a SINGLE user OR item. First loads a dataset file that contains a SINGLE tuple (a dataset for a single user OR item , has to be either same row or same column depending on is_row aka tuple)
+
+        For params: filename,force,sep,format,pickle then see params definition in *datamodel.Data.load()*
+
+        :param is_row: are you trying to foldin a row or a column ? yes->foldin row , no->foldin column
+        :type is_row: boolean
+        :param truncate: sometimes new users rate new items not in the original SVD matrix so would you like new items to be truncated or folded in ? default is foldin
+        :type truncate: boolean
+        :param post_normalize: Normalize every row of :math:`U \Sigma` to be a unit vector. Thus, row similarity (using cosine distance) returns :math:`[-1.0 .. 1.0]`
+        :type post_normalize: Boolean
+
+        """
         if force:
             self._updateData = Data()
 
@@ -379,11 +475,14 @@ class SVD(Algorithm):
             print type(nDimensionLabels[0])
             print len(nDimensionLabels)
             self._singleUpdateMatrix.create(self._updateData.get(), col_labels=nDimensionLabels, foldin=True,truncate=truncate)
+            self._foldinZeroes[self._singleUpdateMatrix.get_rows()[0]] = self._singleUpdateMatrix.get_cols()
+
 
         else:
             nDimensionLabels = self._U.all_labels() #get labels from U matrix to complete the sparse matrix
             print nDimensionLabels
             self._singleUpdateMatrix.create(self._updateData.get(), row_labels=nDimensionLabels, foldin=True,truncate=truncate)
+            self._foldinZeroes[self._singleUpdateMatrix.get_cols()[0]] = self._singleUpdateMatrix.get_rows()
 
         if not truncate:
             additionalElements=self._singleUpdateMatrix.get_additional_elements()
@@ -402,23 +501,49 @@ class SVD(Algorithm):
         # #update the data matrix
         if VERBOSE:
             print "updating the sparse matrix"
-        # print "matrix before update:",self._matrix.get().shape
         if self._matrix.get(): #if matrix not there due to load ignore it
             self._matrix.update(self._singleUpdateMatrix) # updating the data matrix for the zeroes , also for saving the data matrix if needed
-        # print "matrix after update:",self._matrix.get().shape
-        self._update(is_row=is_row)
+
+        # Mean centering
+        if self._shifts: #if not None then it means mean_center was equal true
+            row_shift, col_shift, total_shift=self._shifts
+
+
+            meanedMatrix, rowShift, colShift, totalShift=self._calc_mean_center(self._singleUpdateMatrix.get(),is_row=is_row)
+
+            self._singleUpdateMatrix.set(meanedMatrix)
+
+            if is_row:
+                values, named_rows = row_shift.to_sparse().named_lists() #values numpy array, named_rows normal array
+                valuesFold, named_rowsFold = rowShift.to_sparse().named_lists()
+
+            else:
+                values, named_rows = col_shift.to_sparse().named_lists()  # values numpy array, named_rows normal array
+                valuesFold, named_rowsFold = colShift.to_sparse().named_lists()
+
+
+            values=np.concatenate((values, valuesFold))
+            named_rows.extend(named_rowsFold)
+
+            if is_row:
+                row_shift=divisiSparseVector.from_named_lists(values, named_rows).to_dense()
+            else:
+                col_shift=divisiSparseVector.from_named_lists(values, named_rows).to_dense()
+
+            self._shifts=(row_shift, col_shift, total_shift)
+
+
+        self._update(is_row=is_row,post_normalize=post_normalize)
 
     def _construct_batch_dictionary(self,data,is_row=True):
-        '''
-        
+        """
+
         :param data: Data()
         :param is_row: Boolean
         :return: constructs a dictionary with the row or col as the keys (depending on which is being added) with values as the tuples
         in self._batchDict
-        '''
-        # self._values = map(itemgetter(0), data)
-        # self._rows = map(itemgetter(1), data)
-        # self._cols = map(itemgetter(2), data)
+        """
+
         key_idx=1 #key index default is the row
         if not is_row:
             key_idx=2
@@ -436,23 +561,33 @@ class SVD(Algorithm):
         print "Batch loaded successfully"
 
 
-    def load_updateDataBatch_foldin(self, filename, force=True, sep='\t', format={'value': 0, 'row': 1, 'col': 2},
-                                 pickle=False, is_row=True,truncate=False):
+    def load_updateDataBatch_foldin(self, filename=None, data=None, force=True, sep='\t', format={'value': 0, 'row': 1, 'col': 2},
+                                 pickle=False, is_row=True,truncate=True,post_normalize=False):
             """
-            Dont forget future work in presentation , remove old and insert new
-            Loads a dataset file that contains Multiple tuples
+            Folds in the batch users or items, first Loads a dataset file that contains Multiple tuples (users or items) or uses the preloaded data from the datamodel/data.py object then folds them in with their ratings
 
-            truncate:boolean-> sometimes new users rate new items not in the original SVD matrix so would you like new items to be truncated or folded in ? default is foldin
-            is_row: boolean -> are you trying to foldin a row or a column ? yes->foldin row , no->foldin column
-            See params definition in *datamodel.Data.load()*
-            
+            :param data: Contains the dataset that was loaded using the Data() class
+            :type data: Data()
+
+            For params: filename,force,sep,format,pickle then see params definition in *datamodel.Data.load()*
+
+            :param is_row: are you trying to foldin a row or a column ? yes->foldin row , no->foldin column
+            :type is_row: boolean
+            :param truncate: sometimes new users rate new items not in the original SVD matrix so would you like new items to be truncated or folded in ? default is foldin
+            :type truncate: boolean
+            :param post_normalize: Normalize every row of :math:`U \Sigma` to be a unit vector. Thus, row similarity (using cosine distance) returns :math:`[-1.0 .. 1.0]`
+            :type post_normalize: Boolean
             """
-            # call update here until it finishes
-            # nDimension
+
             if force:
                 self._updateData = Data()
-
-            self._updateData.load(filename, force, sep, format, pickle) #load array of tuples
+            if filename: #not null
+                self._updateData.load(filename, force, sep, format, pickle) #load array of tuples
+            else:
+                if data:
+                    self._updateData =data
+                else:
+                    raise ValueError('No data or filename set!')
             print "Reading the new batch"
 
             self._construct_batch_dictionary(self._updateData.get(),is_row)
@@ -461,32 +596,32 @@ class SVD(Algorithm):
             nDimensionLabels=None
             if (is_row):
                 nDimensionLabels = self._V.all_labels()[0]  # get labels from V matrix to complete the sparse matrix
-                # print nDimensionLabels
             else:
                 nDimensionLabels = self._U.all_labels()[0]  # get labels from U matrix to complete the sparse matrix
-                # print nDimensionLabels
             length_of_dict=len(self._batchDict)
             i=0
+            meanDenseVector=[]
             isbatch=True
             for key_idx in self._batchDict: #data in batchDict in form {key:[(tuple)]}
-                print "user:",key_idx
                 i += 1
+                if VERBOSE:
+                    if i % 100 == 0:
+                        sys.stdout.write('.')
+                    if i % 1000 == 0:
+                        sys.stdout.write('|')
+                    if i % 10000 == 0:
+                        sys.stdout.write(' (%d K user)\n' % int(i / 1000))
+
                 if (is_row):
                     self._singleUpdateMatrix.create(self._batchDict[key_idx], col_labels=nDimensionLabels,foldin=True,truncate=truncate)
 
                 else:
                     self._singleUpdateMatrix.create(self._batchDict[key_idx], row_labels=nDimensionLabels,foldin=True,truncate=truncate)
 
-                # if(i==length_of_dict):
-                #     isbatch=False
-
-
                 # If it's trying to foldin a new user who has rated a new item which was not used before, then foldin the item first then foldin that user
                 if not truncate:
                     additionalElements = self._singleUpdateMatrix.get_additional_elements()
-                    print "dimension", len(nDimensionLabels)
-                    print "additional elements:", additionalElements
-                    print "length", len(additionalElements)
+
                     if len(additionalElements) != 0:
                         for item in additionalElements:
                             if (is_row):  # if I am folding in a row then , the additionals added that shouldn't be are the columns to be folded in to the rows
@@ -495,24 +630,54 @@ class SVD(Algorithm):
                             else:
                                 self._singleAdditionalFoldin.create([(0, item, nDimensionLabels[0])],
                                                                     col_labels=self._V.all_labels()[0])
+
                             self._update(update_matrix=self._singleAdditionalFoldin, is_row=not is_row)
 
+                if self._shifts:  # if not None then it means mean_center was equal true
+                    row_shift, col_shift, total_shift = self._shifts
 
-                # #update the data matrix
-                print "updating the sparse matrix"
-                # print "matrix before update:",self._matrix.get().shape
+
+                    meanedMatrix, rowShift, colShift, totalShift = self._calc_mean_center(self._singleUpdateMatrix.get(),is_row=is_row)
+
+                    self._singleUpdateMatrix.set(meanedMatrix)
+                    # row shift cause it's row for the time being
+                    if is_row:
+                        meanDenseVector.append(rowShift)
+
+                    else:
+                        meanDenseVector.append(colShift)
+
+
                 if self._matrix.get(): #if matrix not there due to load ignore it
                     self._matrix.update(
                         self._singleUpdateMatrix,is_batch=isbatch)  # updating the data matrix for the zeroes , also for saving the data matrix if needed
-                # print "matrix after update:",self._matrix.get().shape
+
                 self._update(is_row=is_row,is_batch=isbatch) #Do foldin on the singleUpdateMatrix tuple
+            if VERBOSE:
+                sys.stdout.write('\n')
+            #     UPDATING MEAN CENTER PART
+            if self._shifts:
+                sys.stdout.write("updating shifts")
+                if is_row:
+                    values, named_rows = row_shift.to_sparse().named_lists()  # values numpy array, named_rows normal array
+                else:
+                    values, named_rows = col_shift.to_sparse().named_lists()  # values numpy array, named_rows normal array
+                for vector in meanDenseVector:
+                    valuesFold, named_rowsFold = vector.to_sparse().named_lists()  # rowShift contains new calculated row shift
+                    values = np.concatenate((values, valuesFold))
+                    named_rows.extend(named_rowsFold)
+                if is_row:
+                    row_shift = divisiSparseVector.from_named_lists(values, named_rows).to_dense()
+                else:
+                    col_shift = divisiSparseVector.from_named_lists(values, named_rows).to_dense()
 
-            self.update_sparse_matrix_data(is_batch=True)
+                self._shifts = (row_shift, col_shift, total_shift)
+
+            self.update_sparse_matrix_data(is_batch=True,squish=False,post_normalize=post_normalize)
 
 
-    def update_sparse_matrix_data(self,squishFactor=10,is_batch=False):
+    def update_sparse_matrix_data(self,squishFactor=10,is_batch=False,squish=True,post_normalize=False):
         #update the data matrix
-        # print "matrix before update:",self._matrix.get().shape
         if is_batch:
             if self._matrix.get():
                 if VERBOSE:
@@ -521,48 +686,34 @@ class SVD(Algorithm):
             if VERBOSE:
                 print "before updating, M=", self._matrix_reconstructed.shape
             # Sim. matrix = U \Sigma^2 U^T
-            self._reconstruct_similarity(post_normalize=False, force=True)
+            self._reconstruct_similarity(post_normalize=post_normalize, force=True)
             # M' = U S V^t
             self._reconstruct_matrix(shifts=self._shifts, force=True)
             if VERBOSE:
                 print "done updating, M=", self._matrix_reconstructed.shape
+        if squish:
+            if self._matrix.get(): #if loaded model there is no matrix
+                if VERBOSE:
+                    print "commiting the sparse data matrix by removing empty rows and columns divisi created"
+                self._matrix.squish(squishFactor) # updating the data matrix for the zeroes ,#NOTE: Intensive so do at end
 
-        if self._matrix.get(): #if loaded model there is no matrix
-            if VERBOSE:
-                print "commiting the sparse data matrix by removing empty rows and columns divisi created"
-            self._matrix.squish(squishFactor) # updating the data matrix for the zeroes ,#NOTE: Intensive so do at end
-            # print "matrix after update:",self._matrix.get().shape
 
-
-    def _update(self,update_matrix=None,is_row=True,is_batch=False): #update(tuple:denseVector tuple,isRow=True,,
-      if VERBOSE:
-          print "type of S",type(self._S)
-          print "type of U",type(self._U)
-          print "type of V",type(self._V)
-          print "type of data",type(self._data)
-          print "type of matrix",type(self._matrix)
-          print "type of matrix reconstructed",type(self._matrix_reconstructed)
-          print "type of matrix similarity",type(self._matrix_similarity)
-
-          print "dimensions of S",self._S.shape
-          print "dimensions of U",self._U.shape
-          print "dimensions of V",self._V.shape
-
-      invS=np.zeros((self._S.shape[0], self._S.shape[0]))
-      for i in range(self._S.shape[0]):
-          # invS[i, i] = self._S[i]  # creating diagonal matrix
-          invS[i, i] = self._S[i]**-1  # creating diagonal matrix and inverting using special property of diagonal matrix
-      # invS=inv(invS) inverting with numpy
+    def _update(self,update_matrix=None,is_row=True,is_batch=False,post_normalize=False):
+    #The function which does the actual folding-in process
+      if self.inv_S is None:
+          self.inv_S=np.zeros((self._S.shape[0], self._S.shape[0]))
+          for i in range(self._S.shape[0]):
+              self.inv_S[i, i] = self._S[i]**-1  # creating diagonal matrix and inverting using special property of diagonal matrix
 
       #if new is row -> V*S^-1
       if is_row:
-        prodM=self._V.dot(invS)
-        if VERBOSE:
-            print "dimension of VxS^-1=", prodM.shape
+        prodM=self._V.dot(self.inv_S)
+        # if VERBOSE:
+        #     print "dimension of VxS^-1=", prodM.shape
       else:       #if new is col -> U*S^-1
-        prodM = self._U.dot(invS)
-        if VERBOSE:
-            print "dimension of UxS^-1=", prodM.shape
+        prodM = self._U.dot(self.inv_S)
+        # if VERBOSE:
+        #     print "dimension of UxS^-1=", prodM.shape
 
       if update_matrix:
           updateTupleMatrix=update_matrix.get()
@@ -571,73 +722,29 @@ class SVD(Algorithm):
 
       if not is_row:
           updateTupleMatrix=updateTupleMatrix.transpose() #transpose
-      if VERBOSE:
-          print "dimensions of user",updateTupleMatrix.shape
+
       res=updateTupleMatrix.dot(prodM)
-      if VERBOSE:
-          print "type of res=", type(res)
-          print "dimension of resultant is", res.shape
 
       if is_row:
-      #use new value can now be concatinated with U
-        if VERBOSE:
-            print "U before adding", self._U.shape
+      #new value can now be concatinated with U
+
         self._U=self._U.concatenate(res)
-        if VERBOSE:
-            print "U after adding", self._U.shape
 
       else:
-        if VERBOSE:
-            print "V before adding", self._V.shape
-        self._V = self._V.concatenate(res)
-        if VERBOSE:
-            print "V after adding", self._V.shape
+      #new value can now be concatinated with V
 
-     #TODO: contemplating removing this segment and just reconstruct in the updating spare matrix function
+        self._V = self._V.concatenate(res)
+
       if not is_batch: #will reconstruct all at end with batch using another function
         if VERBOSE:
             print "before updating, M=",self._matrix_reconstructed.shape
         # Sim. matrix = U \Sigma^2 U^T
-        self._reconstruct_similarity(post_normalize=False, force=True)
+        self._reconstruct_similarity(post_normalize=post_normalize, force=True)
         # M' = U S V^t
         self._reconstruct_matrix(shifts=self._shifts, force=True)
         if VERBOSE:
             print "done updating, M=",self._matrix_reconstructed.shape
 
-
-
-
-      # myFile=open("prodMVSq.dat",'w')
-      # myFile.truncate()
-      #
-      # for i in range(20):
-      #   myFile.write(str(res[0, i])+" ")
-      #
-      #   myFile.write("\n")
-
-      # # invS = inv(diag_S)
-      # # print "dimensions of S^-1", invS.shape
-      #
-      #
-      # print "writing s to file"
-      # myFile=open("invS.dat",'w')
-      # myFile.truncate()
-      # # for item in self.invS.tolist():
-      # #     myFile.write(str(item))
-      # #     myFile.write("\n")
-      # myFile.write("dimensions= "+str(invS.shape))
-      # myFile.write("\n")
-      # for i in range(invS.shape[0]):
-      #   myFile.write(str(invS[i,i]))
-      #   myFile.write("\n")
-
-    def printMovies(self):
-        myFile=open("movieIDs.dat",'w')
-        myFile.truncate()
-
-        movies=self._matrix_reconstructed.get_col_labels()
-        for movie in movies :
-          myFile.write(str(movie)+",")
 
     def centroid(self, ids, is_row=True):
         points = []
@@ -684,7 +791,7 @@ class SVD(Algorithm):
         i = 0
         clusters = dict()
         for cluster in labels:
-            if not clusters.has_key(cluster): 
+            if not clusters.has_key(cluster):
                 clusters[cluster] = dict()
                 clusters[cluster]['centroid'] = centroids[cluster]
                 clusters[cluster]['points'] = []
@@ -754,7 +861,7 @@ class SVDNeighbourhood(SVD):
                 _Sk += 1
             current += 1
             _Sk -= 1
-            if _Sk == 0: 
+            if _Sk == 0:
                 break # We have enough elements to use
         return similars[:Sk]
 
@@ -816,7 +923,7 @@ class SVDNeighbourhood(SVD):
 # SVDNeighbourhoodKoren
 class __SVDNeighbourhoodKoren(SVDNeighbourhood):
     """
-    Inherits from SVDNeighbourhood class. 
+    Inherits from SVDNeighbourhood class.
 
     Neighbourhood model, using Singular Value Decomposition.
     Based on 'Factorization Meets the Neighborhood: a Multifaceted
@@ -901,7 +1008,7 @@ class __SVDNeighbourhoodKoren(SVDNeighbourhood):
         Predicts the value of *M(i,j)*
 
         It is based on 'Factorization Meets the Neighborhood: a Multifaceted
-        Collaborative Filtering Model' (Yehuda Koren). 
+        Collaborative Filtering Model' (Yehuda Koren).
         Equation 3 (section 2.2):
 
         :math:`\hat{r}_{ui} = b_{ui} + \\frac{\sum_{j \in S^k(i;u)} s_{ij} (r_{uj} - b_{uj})}{\sum_{j \in S^k(i;u)} s_{ij}}`, where
@@ -925,8 +1032,8 @@ class __SVDNeighbourhoodKoren(SVDNeighbourhood):
         # bui = µ + bu + bi
         #   The parameters bu and bi indicate the observed deviations of user
         #   u and item i, respectively, from the average
-        # 
-        # S^k(i; u): 
+        #
+        # S^k(i; u):
         #   Using the similarity measure, we identify the k items rated
         #   by u, which are most similar to i.
         #
@@ -946,7 +1053,7 @@ class __SVDNeighbourhoodKoren(SVDNeighbourhood):
         bui = bu + bi
         #if self._Mu: #TODO uncomment?
         #   bui += self._Mu
- 
+
         sim_ratings = []
         sum_similarity = 0.0
         for similar, sij in similars[1:]:
@@ -965,10 +1072,9 @@ class __SVDNeighbourhoodKoren(SVDNeighbourhood):
         Sumj_Sk = sum(sim_ratings)/sum_similarity
         rui = bui + Sumj_Sk
         predicted_value = rui
-        
+
         if MIN_VALUE:
             predicted_value = max(predicted_value, MIN_VALUE)
         if MAX_VALUE:
             predicted_value = min(predicted_value, MAX_VALUE)
         return float(predicted_value)
-
