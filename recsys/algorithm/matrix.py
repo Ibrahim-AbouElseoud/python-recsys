@@ -85,7 +85,7 @@ class SparseMatrix(Matrix):
     def get_cols(self): #can use to get rated items and remove from recommendation
         return self._cols
 
-    def get_additional_elements(self):  # can use to get rated items and remove from recommendation
+    def get_additional_elements(self):  # can use to get additional items to either fold or truncate
         return self._additional_elements
 
 #row_labels specifies the row labels the complete matrix should have incase the inputted file doesn't include all indicies and it was saved in previous matrix (for update)
@@ -131,7 +131,7 @@ class SparseMatrix(Matrix):
     def squish(self,squishFactor): #remove additional empty fields created by divisiSparseMatrix
         self._matrix=self._matrix.squish(squishFactor)
 
-    def index_sparseMatrix(self):
+    def index_sparseMatrix(self): #create the divisi2 sparse matrix from already existing values
         self._matrix = divisiSparseMatrix.from_named_lists(self._values, self._rows, self._cols)
 
     def empty(self):

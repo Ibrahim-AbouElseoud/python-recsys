@@ -125,8 +125,8 @@ class Data:
         :type data_report_path: String
         :param id: id number to be given to the report
         :type id: String
-        :param ignore_rating_count: shuffle dataset?
-        :type ignore_rating_count: Boolean
+        :param ignore_rating_count: The threshold number of ratings to be removed from the data.
+        :type ignore_rating_count: int
 
         :returns: a tuple <Data, Data, Data> for train, test, foldin
         """
