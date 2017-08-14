@@ -4,7 +4,9 @@ python-recsys
 
 A python library for implementing a recommender system.
 
-- Now supports incrementally adding new users or items instead of building the model from scratch for these new users or items via the folding-in technique which was mentioned in Sarwar et al.'s `paper`_ (Titled: Incremental Singular Value Decomposition Algorithms for Highly Scalable Recommender Systems), this latest commit is simply an implementation to it for python-recsys.
+Incremental SVD update for python-recsys
+========================================
+- python-recsys now supports incrementally adding new users or items instead of building the model from scratch for these new users or items via the folding-in technique which was mentioned in Sarwar et al.'s `paper`_ (Titled: Incremental Singular Value Decomposition Algorithms for Highly Scalable Recommender Systems), this latest commit is simply an implementation to it for python-recsys.
 
 .. _`paper`: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.3.7894&rep=rep1&type=pdf
 
@@ -15,7 +17,6 @@ A python library for implementing a recommender system.
 - There is also an accompanying `bachelor thesis paper`_ (For those interested) which outlines the background, architecture and discusses the "Folding-in" approach.
 
 .. _`bachelor thesis paper`: https://drive.google.com/file/d/0BylQe2cRVWE_RmZoUTJYSGZNaXM/view
-
 
 Installation
 ============
@@ -165,7 +166,6 @@ Example
      (4801, 5.4947999354188548),
      (1131, 5.4941438045650068),
      (2339, 5.4916048051511659)]
-
 
 Example for incremental update
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
