@@ -12,7 +12,7 @@ A python library for implementing a recommender system.
 
 .. _`Demonstration video is available`:  https://youtu.be/tIvQxBfa2d4
 
--There is also an accompanying `bachelor thesis paper`_ (For those interested) which outlines the background, architecture and discusses the "Folding-in" approach.
+- There is also an accompanying `bachelor thesis paper`_ (For those interested) which outlines the background, architecture and discusses the "Folding-in" approach.
 
 .. _`bachelor thesis paper`: https://drive.google.com/file/d/0BylQe2cRVWE_RmZoUTJYSGZNaXM/view
 
