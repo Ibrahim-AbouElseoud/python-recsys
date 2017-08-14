@@ -4,6 +4,19 @@ python-recsys
 
 A python library for implementing a recommender system.
 
+- Now supports incrementally adding new users or items instead of building the model from scratch for these new users or items via the folding-in technique which was mentioned in Sarwar et al.'s `paper`_ (Titled: Incremental Singular Value Decomposition Algorithms for Highly Scalable Recommender Systems), this latest commit is simply an implementation to it for python-recsys.
+
+.. _`paper`: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.3.7894&rep=rep1&type=pdf
+
+- A `Demonstration video is available`_  for this latest commit in form of a demo site built using the MEAN stack which uses the updated python-recsys as backend for the recommender which folds-in the website's user in to the SVD model and gets recommendations instantaneously instead of building the model from scratch.
+
+.. _`Demonstration video is available`:  https://youtu.be/tIvQxBfa2d4
+
+-There is also an accompanying `bachelor thesis paper`_ (For those interested) which outlines the background, architecture and discusses the "Folding-in" approach.
+
+.. _`bachelor thesis paper`: https://drive.google.com/file/d/0BylQe2cRVWE_RmZoUTJYSGZNaXM/view
+
+
 Installation
 ============
 
@@ -57,8 +70,8 @@ Example
 
     from recsys.algorithm.factorize import SVD
     svd = SVD()
-    svd.load_data(filename='./data/movielens/ratings.dat', 
-                sep='::', 
+    svd.load_data(filename='./data/movielens/ratings.dat',
+                sep='::',
                 format={'col':0, 'row':1, 'value':2, 'ids': int})
 
 2. Compute Singular Value Decomposition (SVD), M=U Sigma V^t:
@@ -66,11 +79,11 @@ Example
 ::
 
     k = 100
-    svd.compute(k=k, 
-                min_values=10, 
-                pre_normalize=None, 
-                mean_center=True, 
-                post_normalize=True, 
+    svd.compute(k=k,
+                min_values=10,
+                pre_normalize=None,
+                mean_center=True,
+                post_normalize=True,
                 savefile='/tmp/movielens')
 
 3. Get similarity between two movies:
@@ -111,10 +124,10 @@ Example
     USERID = 1
 
     svd.predict(ITEMID, USERID, MIN_RATING, MAX_RATING)
-    # Predicted value 5.0 
+    # Predicted value 5.0
 
     svd.get_matrix().value(ITEMID, USERID)
-    # Real value 5.0 
+    # Real value 5.0
 
 6. Recommend (non-rated) movies to a user:
 
@@ -152,7 +165,130 @@ Example
      (4801, 5.4947999354188548),
      (1131, 5.4941438045650068),
      (2339, 5.4916048051511659)]
-    
+
+
+Example for incremental update
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+1. Load Movielens dataset and prepare for training and testing:
+
+::
+
+    import recsys.algorithm
+    recsys.algorithm.VERBOSE = True
+
+    from recsys.algorithm.factorize import SVD
+    from recsys.datamodel.data import Data
+
+    filename = “(your movielens file path here)”
+
+    #In movielens dataset, the user is at 0 so I made them the row (could keep it as above {'col':0, 'row':1, 'value':2, 'ids': int} but I changed order to emphasis a parameter in an upcoming function)
+    format = {'col':1, 'row':0, 'value':2, 'ids': int}
+
+    data = Data()
+    data.load(filename, sep='::', format=format)
+    #splits the dataset according to row or column (based on is_row=true or false) which causes there to be no overlap (of users for example) between train and foldin dataset
+    train, test, foldin = data.split_train_test_foldin(base=60,percentage_base_user=80,shuffle_data=True,is_row=True) #since users are in the row so is_row=true
+
+    # Returns: a tuple <Data, Data, Data> for train, test, foldin
+    # Prints: (If VERBOSE=True)
+    total number of tuples: 1000209
+    percentage of data for training: 48.0 % with 479594 tuples
+    percentage of data for testing: 20.0 % with 200016 tuples # 100-percentage_base_user per user (percentage of tuples which means the ratings since a user has many tuples(ratings))
+    percentage of data for foldin: 32.0 % with 320599 tuples
+    _____________
+    percentage of users for foldin: 40.0 % with 2416 users # 100-base= foldin (percentage of users)
+    percentage of users for training: 60.0 % with 3624 users #base for training (percentage of users)
+
+2. Compute Singular Value Decomposition (SVD), M=U Sigma V^t:
+
+::
+
+    svd = SVD()
+    svd.set_data(train)
+    svd.compute(k=100,
+            	min_values=1,
+            	pre_normalize=None,
+            	mean_center=False,
+            	post_normalize=True)
+
+    # Prints:
+    Creating matrix (479594 tuples)
+    Matrix density is: 3.7007%
+    Updating matrix: squish to at least 1 values
+    Computing svd k=14, min_values=1, pre_normalize=None, mean_center=False, post_normalize=False
+
+3. "Foldin" those new users or items (update model instead of updating from scratch)
+
+::
+
+    svd.load_updateDataBatch_foldin(data=foldin,is_row=True)
+
+    # Prints: (If VERBOSE=True)
+    before updating, M= (3624, 3576)
+    done updating, M= (6040, 3576) # Folds in all the new users (not previously in model)
+
+4. Recommend (non-rated) movies to a NEW user
+::
+
+    user_id=foldin[0][1] #returns userID which is in foldin dataset BUT not in train dataset
+    svd.recommend(user_id,is_row=True,only_unknowns=True) #The userID is in row and gets only the unrated (unknowns)
+
+    # Returns: <ITEMID, Predicted Rating>
+    [(1307, 3.6290483094468913),
+    (1394, 3.5741565545425957),
+    (1259, 3.5303836262378048),
+    (1968, 3.4565426585553927),
+    (2791, 3.3470277643217203),
+    (1079, 3.268283171487782),
+    (1198, 3.2381080336246675),
+    (593, 3.204915630088236),
+    (1270, 3.1859618303393233),
+    (2918, 3.1548530640630252)]
+
+5. Recommend (non-rated) movies to a NEW user and validate not in base model (prior to folding-in)
+::
+
+    # BEFORE running points 3 and 4 (prior to calling svd.load_updateDataBatch_foldin)
+
+    user_id=foldin[0][1] #returns userID which is in foldin dataset BUT not in train dataset
+
+    # Try block to validate that the userID is new and not in the base model
+    try:
+        print "Getting recommendation for user_id which was not in original model training set"
+        print "recommendations:",svd.recommend(user_id)
+    except Exception:
+        print "New user not in base model so in except block and will foldin the foldin dataset (update the model NOT calculate from scratch)"
+        svd.load_updateDataBatch_foldin(data=foldin,format=format,is_row=True,truncate=True,post_normalize=True)
+        print "recommendations:",svd.recommend(user_id,is_row=True,only_unknowns=True) #The userID is in row and get us only the unrated (unknowns)
+
+
+    # Prints:
+    Getting recommendation for user_id which was not in original model training set
+    recommendations: New user not in base model so in except block and will foldin the foldin dataset (update the model NOT calculate from scratch)
+    before updating, M= (3624, 3576)
+    done updating, M= (6040, 3576)
+    recommendations: [(1307, 3.6290483094468913), (1394, 3.5741565545425957), (1259, 3.5303836262378048), (1968, 3.4565426585553927), (2791, 3.3470277643217203), (1079, 3.268283171487782), (1198, 3.2381080336246675), (593, 3.204915630088236), (1270, 3.1859618303393233), (2918, 3.1548530640630252)]
+
+
+6. Load previous SVD model and foldin NEW users from file then instantly get recommendations
+::
+
+    format = {'col':1, 'row':0, 'value':2, 'ids': int}
+
+    svd = SVD()
+    #load base svd model
+    svd.load_model('SVDModel')
+
+    # load new users by their movie rating data file and use it to fold-in the users into the model (loads data and folds in)
+    svd.load_updateDataBatch_foldin(filename = 'newUsers.dat', sep='::', format=formate, is_row=True)
+
+    # gets recommendedations
+    print "recommendations:", svd.recommend(new_userID,is_row=True,only_unknowns=True)
+
+
+- All the normal functionalities of python-recsys are compatible with the incremental update commit. The incremental update can even work if you load the model then foldin a new user or users or even items.
+
+- Please note that preexisting users can't be folded-in only new users which aren't already in the svd model.
 
 Documentation
 ~~~~~~~~~~~~~
@@ -168,10 +304,8 @@ To create the HTML documentation files from doc/source do:
     cd doc
     make html
 
-HTML files are created here: 
+HTML files are created here:
 
 ::
 
     doc/build/html/index.html
-
-
